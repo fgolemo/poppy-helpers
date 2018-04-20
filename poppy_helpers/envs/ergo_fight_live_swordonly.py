@@ -7,7 +7,6 @@ import logging
 
 from pytorch_a2c_ppo_acktr.inference import Inference
 from skimage.transform import resize
-from vrepper.core import vrepper
 
 logger = logging.getLogger(__name__)
 
