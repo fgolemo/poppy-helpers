@@ -5,44 +5,17 @@ import numpy as np
 from gym import spaces
 import logging
 
+from poppy_helpers.constants import JOINT_LIMITS, REST_POS, SWORDFIGHT_RANDOM_NOISE, MOVE_EVERY_N_STEPS
 from pytorch_a2c_ppo_acktr.inference import Inference
 from skimage.transform import resize
 
-logger = logging.getLogger(__name__)
-
-REST_POS = [0, 0, 0, 0, 0, 0]
-RANDOM_NOISE = [
-    (-90, 90),
-    (-30, 30),
-    (-30, 30),
-    (-45, 45),
-    (-30, 30),
-    (-30, 30)
-]
-INVULNERABILITY_AFTER_HIT = 3  # how many frames after a hit to reset
-IMAGE_SIZE = (84, 84)
-SWORD_ONLY_RANDOM_MOVE = 30  # move every N frames randomly in case the attacker can't reach the sword
-
-
 class ErgoFightLiveEnv(gym.Env):
-    def __init__(self, headless=True, with_img=True,
-                 only_img=False, fencing_mode=False, defence=False, sword_only=False, fat=False):
-        self.headless = headless
-        self.with_img = with_img
-        self.only_img = only_img
-        self.fencing_mode = fencing_mode
-        self.defence = defence
-        self.sword_only = sword_only
-        self.fat = fat
+    def __init__(self, no_move=False, scaling=1, shield=True):
+        self.no_move = no_move
+        self.scaling = scaling
+        self.shield = shield
+
         self.step_in_episode = 0
-
-        if self.defence:
-            # load up the inference model for the attacker
-            self.inf = Inference("/home/florian/dev/pytorch-a2c-ppo-acktr/"
-                                 "trained_models/ppo/"
-                                 "ErgoFightStatic-Headless-Fencing-v0-180301140937.pt")
-
-        self._startEnv(headless)
 
         self.metadata = {
             'render.modes': ['human', 'rgb_array']
@@ -50,88 +23,56 @@ class ErgoFightLiveEnv(gym.Env):
 
         joint_boxes = spaces.Box(low=-1, high=1, shape=(6,))
 
-        if self.with_img:
-            cam_image = spaces.Box(low=0, high=255, shape=(IMAGE_SIZE[0], IMAGE_SIZE[1], 3))
-
-            if self.only_img:
-                self.observation_space = cam_image
-            else:
-                own_joints = spaces.Box(low=-1, high=1, shape=(6 + 6,))  # 6 joint pos, 6 joint vel
-                self.observation_space = spaces.Tuple((cam_image, own_joints))
-        else:
-            # 6 own joint pos, 6 own joint vel, 6 enemy joint pos, 6 enemy joint vel
-            all_joints = spaces.Box(low=-1, high=1, shape=(6 + 6 + 6 + 6,))
-            self.observation_space = all_joints
+        # 6 own joint pos, 6 own joint vel, 6 enemy joint pos, 6 enemy joint vel
+        all_joints = spaces.Box(low=-1, high=1, shape=(6 + 6 + 6 + 6,))
+        self.observation_space = all_joints
 
         self.action_space = joint_boxes
 
         self.diffs = [JOINT_LIMITS[i][1] - JOINT_LIMITS[i][0] for i in range(6)]
-        self.frames_after_hit = -1  # -1 means no recent hit, anything 0 or above means it's counting
 
     def _seed(self, seed=None):
         np.random.seed(seed)
 
     def _startEnv(self, headless):
-        self.venv = vrepper(headless=headless)
-        self.venv.start()
-        current_dir = os.path.dirname(os.path.realpath(__file__))
+        #TODO: launch windows
 
-        scene = current_dir + '/../scenes/poppy_ergo_jr_fight_sword{}.ttt'
-        if self.sword_only:
-            file_to_load = "_only_sword"
-            if self.fat:
-                file_to_load += "_fat"
-        else:
-            file_to_load = "1"
-
-        scene = scene.format(file_to_load)
-
-        self.venv.load_scene(scene)
-        self.motors = ([], [])
-        for robot_idx in range(2):
-            for motor_idx in range(6):
-                motor = self.venv.get_object_by_name('r{}m{}'.format(robot_idx + 1, motor_idx + 1), is_joint=True)
-                self.motors[robot_idx].append(motor)
-        collision_obj = "sword_hit"
-        if self.fat:
-            collision_obj += "_fat"
-        self.sword_collision = self.venv.get_collision_object(collision_obj)
-        self.cam = self.venv.get_object_by_name('cam', is_joint=False).handle
-        # self.tip = self.frames_after_hit
+    def _move_robot(self, configuration, robot=0):
+        req = {"robot": {"set_pos": {"pos": [0, 0, 0, 0, 0, 0]}}}
+        socket.send_json(req)
+        answer = socket.recv_json()
+        #TODO: test response
 
     def _restPos(self):
         self.done = False
-        self.venv.stop_simulation()
-        self.venv.start_simulation(is_sync=True)
 
-        for i, m in enumerate(self.motors[0]):
-            m.set_position_target(REST_POS[i])
+        self._move_robot(REST_POS, robot=0)
+        self._move_robot(REST_POS, robot=1)
 
-        self.randomize(robot=1)
+        #TODO: potentially sleep here for a second until target reached
 
-        for _ in range(15):  # TODO test if 15 frames is enough
-            self.venv.step_blocking_simulation()
+        self.randomize(robot=1, scaling=self.scaling)
 
-    def randomize(self, robot=1, scaling = 1.0):
-        for i in range(6):
-            new_pos = REST_POS[i] + scaling * np.random.randint(
-                low=RANDOM_NOISE[i][0],
-                high=RANDOM_NOISE[i][1],
-                size=1)[0]
-            self.motors[robot][i].set_position_target(new_pos)
+        #TODO: potentially sleep here for a second until in random pos
+
+    def randomize(self, robot=1, scaling=1.0):
+        new_pos = [REST_POS[i] + scaling * np.random.randint(
+                low=SWORDFIGHT_RANDOM_NOISE[i][0],
+                high=SWORDFIGHT_RANDOM_NOISE[i][1],
+                size=1)[0] for i in range(6)]
+        self._move_robot(new_pos, robot=robot)
 
     def _reset(self):
         self.step_in_episode = 0
         self._restPos()
         self._self_observe()
-        self.frames_after_hit = -1  # this enables hits / disables invulnerability frame
         return self.observation
 
-    def _getReward(self):
-        # The only way of getting reward is by hitting and releasing, hitting and releasing.
-        # Just touching and holding doesn't work.
+    def _get_reward(self):
+
+        #TODO: implement the collision checking here
         reward = 0
-        if self.sword_collision.is_colliding() and self.frames_after_hit == -1:
+        if check_collision():
             reward = 1
             if not self.fencing_mode:
                 self.frames_after_hit = 0
@@ -152,33 +93,19 @@ class ErgoFightLiveEnv(gym.Env):
         return reward
 
     def _get_robot_posvel(self, robot_id):
-        pos = []
-        vel = []
-        for i, m in enumerate(self.motors[robot_id]):
-            pos.append(m.get_joint_angle())
-            vel.append(m.get_joint_velocity()[0])
+        req = {"robot": {"get_pos_speed": {}}}
+        socket.send_json(req)
+        answer = socket.recv_json()
 
-        pos = self._normalize(pos)  # move pos into range [-1,1]
+        #TODO: check return value/format
 
-        joint_vel = np.hstack((pos, vel)).astype('float32')
-        return joint_vel
+        return answer
 
     def _self_observe(self):
-        own_joint_vel = self._get_robot_posvel(0)
-        if self.with_img:
-            cam_image = self.venv.flip180(self.venv.get_image(self.cam))
-            cam_image = resize(cam_image, IMAGE_SIZE)
-            if self.only_img:
-                self.observation = cam_image
-            else:
-                self.observation = (cam_image, own_joint_vel)
-        else:
-            enemy_joint_vel = self._get_robot_posvel(1)
-            self.observation = np.hstack((own_joint_vel, enemy_joint_vel)).astype('float32')
+        joint_vel_att = self._get_robot_posvel(0)
+        joint_vel_def = self._get_robot_posvel(1)
+        self.observation = np.hstack((joint_vel_att, joint_vel_def)).astype('float32')
 
-    def _gotoPos(self, pos, robot=0):
-        for i, m in enumerate(self.motors[robot]):
-            m.set_position_target(pos[i])
 
     def _normalize(self, pos):
         out = []
@@ -205,26 +132,19 @@ class ErgoFightLiveEnv(gym.Env):
         self.step_in_episode += 1
         actions = self.prep_actions(actions)
 
-        robot = 0
+        self._move_robot(actions, robot=0)
 
-        attacker_action = []
-        if self.defence:
-            attacker_action = self.prep_actions(self.inf.get_action(self.observation))
-            self._gotoPos(attacker_action, robot=0)
-            robot = 1
-
-        self._gotoPos(actions, robot=robot)
-        self.venv.step_blocking_simulation()
-
-        if (not self.sword_only and not self.defence and self.step_in_episode % 5 == 0) or \
-                (self.sword_only and self.step_in_episode % SWORD_ONLY_RANDOM_MOVE == 0):
-            #print("randomizing, episode", self.step_in_episode)
-            self.randomize(1, scaling=0.5)
+        if not self.no_move:
+            if self.step_in_episode % MOVE_EVERY_N_STEPS == 0:
+                self.randomize(1, scaling=self.scaling)
 
         # observe again
         self._self_observe()
+        reward = self._get_reward()
 
-        return self.observation, self._getReward(), self.done, {"attacker": attacker_action}
+        #TODO: here make sure it's not going faster than max framerate
+
+        return self.observation, reward, self.done, {}
 
     def _close(self):
         self.venv.stop_simulation()
@@ -239,7 +159,7 @@ class ErgoFightLiveEnv(gym.Env):
         # ... not the ones with "...-Headless-..."
         pass
 
+    if __name__ == '__main__':
+        pass
+        #TODO
 
-if __name__ == '__main__':
-    #TODO actual test
-    pass
