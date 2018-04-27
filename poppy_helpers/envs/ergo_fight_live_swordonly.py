@@ -6,8 +6,10 @@ from gym import spaces
 import logging
 
 from poppy_helpers.constants import JOINT_LIMITS, REST_POS, SWORDFIGHT_RANDOM_NOISE, MOVE_EVERY_N_STEPS
+from poppy_helpers.controller import SwordFightZMQController
 from pytorch_a2c_ppo_acktr.inference import Inference
 from skimage.transform import resize
+
 
 class ErgoFightLiveEnv(gym.Env):
     def __init__(self, no_move=False, scaling=1, shield=True):
@@ -31,81 +33,73 @@ class ErgoFightLiveEnv(gym.Env):
 
         self.diffs = [JOINT_LIMITS[i][1] - JOINT_LIMITS[i][0] for i in range(6)]
 
+        self._init_robots()
+
+    def _init_robots(self):
+
+        self.controller_def = SwordFightZMQController(mode="def", host="flogo4.local")
+        self.controller_att = SwordFightZMQController(mode="att", host="flogo2.local")
+
+        self.controller_def.compliant(False)
+        self.controller_att.compliant(False)
+
+        self.controller_att.set_max_speed(100)
+        self.controller_def.set_max_speed(100)
+
+        self.controller_def.safe_rest()
+        self.controller_att.safe_rest()
+
+        self.controller_def.get_keys()  # in case there are keys stored
+
     def _seed(self, seed=None):
         np.random.seed(seed)
-
-    def _startEnv(self, headless):
-        #TODO: launch windows
-
-    def _move_robot(self, configuration, robot=0):
-        req = {"robot": {"set_pos": {"pos": [0, 0, 0, 0, 0, 0]}}}
-        socket.send_json(req)
-        answer = socket.recv_json()
-        #TODO: test response
 
     def _restPos(self):
         self.done = False
 
-        self._move_robot(REST_POS, robot=0)
-        self._move_robot(REST_POS, robot=1)
+        self.controller_def.safe_rest()
+        self.controller_att.safe_rest()
 
-        #TODO: potentially sleep here for a second until target reached
+        time.sleep(1)  # FIXME: run loop, check joints
 
         self.randomize(robot=1, scaling=self.scaling)
 
-        #TODO: potentially sleep here for a second until in random pos
+        time.sleep(1)  # FIXME: instead run a loop here and check when
+        # the joints are close to the given configuration
 
     def randomize(self, robot=1, scaling=1.0):
         new_pos = [REST_POS[i] + scaling * np.random.randint(
-                low=SWORDFIGHT_RANDOM_NOISE[i][0],
-                high=SWORDFIGHT_RANDOM_NOISE[i][1],
-                size=1)[0] for i in range(6)]
-        self._move_robot(new_pos, robot=robot)
+            low=SWORDFIGHT_RANDOM_NOISE[i][0],
+            high=SWORDFIGHT_RANDOM_NOISE[i][1],
+            size=1)[0] for i in range(6)]
+        robot_ctrl = self.controller_att
+        if robot == 1:
+            robot_ctrl = self.controller_def
+
+        robot_ctrl.goto_pos(new_pos)
 
     def _reset(self):
         self.step_in_episode = 0
         self._restPos()
         self._self_observe()
+        self.controller_def.get_keys() # clear queue
         return self.observation
 
     def _get_reward(self):
 
-        #TODO: implement the collision checking here
+        collisions = self.controller_def.get_keys()
+
         reward = 0
-        if check_collision():
+        if "s" in collisions:
             reward = 1
-            if not self.fencing_mode:
-                self.frames_after_hit = 0
-            else:
-                self._restPos()  # if fencing mode then reset pos on each hit
-
-        # the following bit is for making sure the robot doen't just hit repeatedly
-        # ...so the invulnerability countdown only start when the collision is released
-        else:  # if it's not hitting anything right now
-            if self.frames_after_hit >= 0:
-                self.frames_after_hit += 1
-            if self.frames_after_hit >= INVULNERABILITY_AFTER_HIT:
-                self.frames_after_hit = -1
-
-        if self.defence:
-            reward *= -1
+            self._restPos()
 
         return reward
 
-    def _get_robot_posvel(self, robot_id):
-        req = {"robot": {"get_pos_speed": {}}}
-        socket.send_json(req)
-        answer = socket.recv_json()
-
-        #TODO: check return value/format
-
-        return answer
-
     def _self_observe(self):
-        joint_vel_att = self._get_robot_posvel(0)
-        joint_vel_def = self._get_robot_posvel(1)
+        joint_vel_att = self.controller_att.get_posvel()
+        joint_vel_def = self.controller_def.get_posvel()
         self.observation = np.hstack((joint_vel_att, joint_vel_def)).astype('float32')
-
 
     def _normalize(self, pos):
         out = []
@@ -132,23 +126,20 @@ class ErgoFightLiveEnv(gym.Env):
         self.step_in_episode += 1
         actions = self.prep_actions(actions)
 
-        self._move_robot(actions, robot=0)
+        self.controller_att.goto_pos(actions)
 
         if not self.no_move:
             if self.step_in_episode % MOVE_EVERY_N_STEPS == 0:
+                # print ("step {}, randomizing".format(self.step_in_episode))
                 self.randomize(1, scaling=self.scaling)
 
         # observe again
         self._self_observe()
         reward = self._get_reward()
 
-        #TODO: here make sure it's not going faster than max framerate
+        # TODO: here make sure it's not going faster than max framerate
 
         return self.observation, reward, self.done, {}
-
-    def _close(self):
-        self.venv.stop_simulation()
-        self.venv.end()
 
     def _render(self, mode='human', close=False):
         # This intentionally does nothing and is only here for wrapper functions.
@@ -160,6 +151,14 @@ class ErgoFightLiveEnv(gym.Env):
         pass
 
     if __name__ == '__main__':
-        pass
-        #TODO
+        import poppy_helpers
+        from tqdm import tqdm
 
+        env = gym.make("ErgoFight-Live-Shield-Move-ThreequarterRand-v0")
+
+        env.reset()
+
+        for i in tqdm(range(1000)):
+            action = env.action_space.sample()
+            obs, rew, done, _ = env.step(action)
+            print (obs, rew, done)

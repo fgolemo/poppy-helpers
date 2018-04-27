@@ -43,5 +43,5 @@ MOVES = {
     # "def3": [35.34, -36.8, 92.82, 77.27, -65.25, -58.8]
 }
 
-MOVE_EVERY_N_STEPS = 10
+MOVE_EVERY_N_STEPS = 200
 

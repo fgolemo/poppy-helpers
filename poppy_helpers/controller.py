@@ -1,6 +1,7 @@
 import numpy as np
 import time
 
+import zmq
 from poppy_helpers.constants import REST_POS, SWORDFIGHT_REST_ATT, SWORDFIGHT_REST_DEF, REST_HALF_POS
 
 
@@ -71,3 +72,54 @@ class SwordFightController(Controller):
 
     def goto_pos(self, pos):
         super().goto_pos(self.compensate_pos(pos))
+
+class SwordFightZMQController(SwordFightController):
+    def __init__(self, mode, host, port=5757):
+        context = zmq.Context()
+        self.socket = context.socket(zmq.PAIR)
+        print("Connecting to robot...")
+        self.socket.connect("tcp://{}:{}".format(host, port))
+        print("Connected.")
+
+        super().__init__(None, mode)
+
+    def _check_answer(self, answer, function):
+        if answer: # answer is dict, empty dicts are False
+            print ("ERROR: in ",function,answer)
+
+    def goto_pos(self, pos):
+        pos = self.compensate_pos(pos)
+
+        req = {"robot": {"set_pos": {"positions": pos}}}
+        self.socket.send_json(req)
+        self._check_answer(self.socket.recv_json(), "goto_pos")
+
+    def get_pos(self):
+        req = {"robot": {"get_pos_speed": {}}}
+        self.socket.send_json(req)
+        answer = self.socket.recv_json()
+        return answer[:6] # the other 6 values in this list are the angular velocities
+
+    def get_posvel(self):
+        req = {"robot": {"get_pos_speed": {}}}
+        self.socket.send_json(req)
+        answer = self.socket.recv_json()
+        return answer
+
+    def compliant(self, trueorfalse):
+        req = {"robot": {"set_compliant": {"trueorfalse": trueorfalse}}}
+        self.socket.send_json(req)
+        self._check_answer(self.socket.recv_json(), "compliant")
+
+    def set_max_speed(self, max_speed):
+        req = {"robot": {"set_max_speed": {"max_speed": max_speed}}}
+        self.socket.send_json(req)
+        self._check_answer(self.socket.recv_json(), "set_max_speed")
+
+    def get_keys(self):
+        req = {"robot": {"get_keys": {}}}
+        self.socket.send_json(req)
+        answer = self.socket.recv_json()
+        return answer
+
+
