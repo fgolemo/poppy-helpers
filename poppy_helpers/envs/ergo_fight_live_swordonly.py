@@ -1,14 +1,12 @@
-import os
 import time
 import gym
 import numpy as np
 from gym import spaces
-import logging
 
-from poppy_helpers.constants import JOINT_LIMITS, REST_POS, SWORDFIGHT_RANDOM_NOISE, MOVE_EVERY_N_STEPS
+from poppy_helpers.constants import JOINT_LIMITS, MOVE_EVERY_N_STEPS, MAX_REFRESHRATE, JOINT_LIMITS_SPEED
 from poppy_helpers.controller import SwordFightZMQController
-from pytorch_a2c_ppo_acktr.inference import Inference
-from skimage.transform import resize
+
+from poppy_helpers.randomizer import Randomizer
 
 
 class ErgoFightLiveEnv(gym.Env):
@@ -17,19 +15,20 @@ class ErgoFightLiveEnv(gym.Env):
         self.scaling = scaling
         self.shield = shield
 
+        self.rand = Randomizer()
+        self.last_step_time = None
+
         self.step_in_episode = 0
+        self.step_in_fight = 0
 
         self.metadata = {
             'render.modes': ['human', 'rgb_array']
         }
 
-        joint_boxes = spaces.Box(low=-1, high=1, shape=(6,))
-
         # 6 own joint pos, 6 own joint vel, 6 enemy joint pos, 6 enemy joint vel
-        all_joints = spaces.Box(low=-1, high=1, shape=(6 + 6 + 6 + 6,))
-        self.observation_space = all_joints
+        self.observation_space = spaces.Box(low=-1, high=1, shape=(6 + 6 + 6 + 6,))
 
-        self.action_space = joint_boxes
+        self.action_space = spaces.Box(low=-1, high=1, shape=(6,))
 
         self.diffs = [JOINT_LIMITS[i][1] - JOINT_LIMITS[i][0] for i in range(6)]
 
@@ -66,12 +65,10 @@ class ErgoFightLiveEnv(gym.Env):
 
         time.sleep(1)  # FIXME: instead run a loop here and check when
         # the joints are close to the given configuration
+        self.controller_def.get_keys()  # clear queue
 
     def randomize(self, robot=1, scaling=1.0):
-        new_pos = [REST_POS[i] + scaling * np.random.randint(
-            low=SWORDFIGHT_RANDOM_NOISE[i][0],
-            high=SWORDFIGHT_RANDOM_NOISE[i][1],
-            size=1)[0] for i in range(6)]
+        new_pos = self.rand.random_sf(scaling)
         robot_ctrl = self.controller_att
         if robot == 1:
             robot_ctrl = self.controller_def
@@ -82,7 +79,7 @@ class ErgoFightLiveEnv(gym.Env):
         self.step_in_episode = 0
         self._restPos()
         self._self_observe()
-        self.controller_def.get_keys() # clear queue
+        self.last_step_time = time.time()
         return self.observation
 
     def _get_reward(self):
@@ -99,7 +96,9 @@ class ErgoFightLiveEnv(gym.Env):
     def _self_observe(self):
         joint_vel_att = self.controller_att.get_posvel()
         joint_vel_def = self.controller_def.get_posvel()
-        self.observation = np.hstack((joint_vel_att, joint_vel_def)).astype('float32')
+        self.observation = self._normalize(
+            np.hstack((joint_vel_att, joint_vel_def)).astype('float32')
+        )
 
     def _normalize(self, pos):
         out = []
@@ -107,6 +106,10 @@ class ErgoFightLiveEnv(gym.Env):
             shifted = (pos[i] - JOINT_LIMITS[i][0]) / self.diffs[i]  # now it's in [0,1]
             norm = shifted * 2 - 1
             out.append(norm)
+        if len(pos) > 6:
+            shifted = (np.array(pos[6:]) + JOINT_LIMITS_SPEED) / (JOINT_LIMITS_SPEED * 2)
+            norm = shifted * 2 - 1
+            out += list(norm)
         return out
 
     def _denormalize(self, actions):
@@ -137,8 +140,11 @@ class ErgoFightLiveEnv(gym.Env):
         self._self_observe()
         reward = self._get_reward()
 
-        # TODO: here make sure it's not going faster than max framerate
+        dt = (time.time() - self.last_step_time) * 1000
+        if dt < MAX_REFRESHRATE:
+            time.sleep((MAX_REFRESHRATE - dt) / 1000)
 
+        self.last_step_time = time.time()
         return self.observation, reward, self.done, {}
 
     def _render(self, mode='human', close=False):
@@ -158,7 +164,7 @@ class ErgoFightLiveEnv(gym.Env):
 
         env.reset()
 
-        for i in tqdm(range(1000)):
+        for i in tqdm(range(2)):
             action = env.action_space.sample()
             obs, rew, done, _ = env.step(action)
-            print (obs, rew, done)
+            print(i, obs, rew, done)

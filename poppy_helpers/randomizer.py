@@ -18,8 +18,8 @@ class Randomizer(object):
 
         return out
 
-    def random_sf(self):
-        return self.random_from_rest(REST_POS, SWORDFIGHT_RANDOM_NOISE)
+    def random_sf(self, scaling = 1.0):
+        return self.random_from_rest(REST_POS, SWORDFIGHT_RANDOM_NOISE, scaling)
 
     def random_def_stance(self):
         return MOVES["def{}".format(random.randint(0,3))]
