@@ -45,9 +45,6 @@ class ErgoFightLiveEnv(gym.Env):
         self.controller_att.set_max_speed(100)
         self.controller_def.set_max_speed(100)
 
-        self.controller_def.safe_rest()
-        self.controller_att.safe_rest()
-
         self.controller_def.get_keys()  # in case there are keys stored
 
     def _seed(self, seed=None):
@@ -96,9 +93,9 @@ class ErgoFightLiveEnv(gym.Env):
     def _self_observe(self):
         joint_vel_att = self.controller_att.get_posvel()
         joint_vel_def = self.controller_def.get_posvel()
-        self.observation = self._normalize(
+        self.observation = ((self._normalize(
             np.hstack((joint_vel_att, joint_vel_def)).astype('float32')
-        )
+        )), )
 
     def _normalize(self, pos):
         out = []
@@ -107,7 +104,7 @@ class ErgoFightLiveEnv(gym.Env):
             norm = shifted * 2 - 1
             out.append(norm)
         if len(pos) > 6:
-            shifted = (np.array(pos[6:]) + JOINT_LIMITS_SPEED) / (JOINT_LIMITS_SPEED * 2)
+            shifted = (pos[6:] + JOINT_LIMITS_SPEED) / (JOINT_LIMITS_SPEED * 2)
             norm = shifted * 2 - 1
             out += list(norm)
         return out
