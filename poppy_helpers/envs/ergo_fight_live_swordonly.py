@@ -39,19 +39,23 @@ class ErgoFightLiveEnv(gym.Env):
         self.controller_def = SwordFightZMQController(mode="def", host="flogo4.local")
         self.controller_att = SwordFightZMQController(mode="att", host="flogo2.local")
 
-        self.controller_def.compliant(False)
-        self.controller_att.compliant(False)
-
-        self.controller_att.set_max_speed(100)
-        self.controller_def.set_max_speed(100)
+        self._setSpeedCompliance()
 
         self.controller_def.get_keys()  # in case there are keys stored
+
+    def _setSpeedCompliance(self):
+        self.controller_def.compliant(False)
+        self.controller_att.compliant(False)
+        self.controller_att.set_max_speed(100)
+        self.controller_def.set_max_speed(100)
 
     def _seed(self, seed=None):
         np.random.seed(seed)
 
     def _restPos(self):
         self.done = False
+
+        self._setSpeedCompliance()
 
         self.controller_def.safe_rest()
         self.controller_att.safe_rest()
