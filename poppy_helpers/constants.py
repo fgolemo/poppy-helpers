@@ -1,6 +1,6 @@
 JOINT_LIMITS = [
-    (-150, 150),
-    (-90, 125),
+    (-90, 90),
+    (-90, 90),
     (-90, 90),
     (-90, 90),
     (-90, 90),
@@ -48,3 +48,5 @@ MOVE_EVERY_N_STEPS = 250
 
 # in ms
 MAX_REFRESHRATE = 10
+
+SIM_VELOCITY_SCALING = 97

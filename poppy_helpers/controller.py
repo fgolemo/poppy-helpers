@@ -123,3 +123,58 @@ class SwordFightZMQController(SwordFightController):
         return answer
 
 
+class ZMQController():
+    def __init__(self, host, port=5757):
+        context = zmq.Context()
+        self.socket = context.socket(zmq.PAIR)
+        print("Connecting to robot...")
+        self.socket.connect("tcp://{}:{}".format(host, port))
+        print("Connected.")
+
+    def _check_answer(self, answer, function):
+        if answer: # answer is dict, empty dicts are False
+            print ("ERROR: in ",function,answer)
+
+    def goto_pos(self, pos):
+        req = {"robot": {"set_pos": {"positions": pos}}}
+        self.socket.send_json(req)
+        self._check_answer(self.socket.recv_json(), "goto_pos")
+
+    def get_pos(self):
+        req = {"robot": {"get_pos_speed": {}}}
+        self.socket.send_json(req)
+        answer = self.socket.recv_json()
+        return answer[:6] # the other 6 values in this list are the angular velocities
+
+    def get_posvel(self):
+        req = {"robot": {"get_pos_speed": {}}}
+        self.socket.send_json(req)
+        answer = self.socket.recv_json()
+        return answer
+
+    def compliant(self, trueorfalse):
+        req = {"robot": {"set_compliant": {"trueorfalse": trueorfalse}}}
+        self.socket.send_json(req)
+        self._check_answer(self.socket.recv_json(), "compliant")
+
+    def set_max_speed(self, max_speed):
+        req = {"robot": {"set_max_speed": {"max_speed": max_speed}}}
+        self.socket.send_json(req)
+        self._check_answer(self.socket.recv_json(), "set_max_speed")
+
+    def rest(self):
+        self.goto_pos([0]*6)
+
+    def get_keys(self):
+        req = {"robot": {"get_keys": {}}}
+        self.socket.send_json(req)
+        answer = self.socket.recv_json()
+        return answer
+    
+    def safe_rest(self):
+        self.goto_pos(REST_HALF_POS)
+        time.sleep(1)
+        self.goto_pos(REST_POS)
+
+
+
