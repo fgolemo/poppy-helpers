@@ -29,9 +29,9 @@ class ErgoFightLiveEnv(gym.Env):
         }
 
         # 6 own joint pos, 6 own joint vel, 6 enemy joint pos, 6 enemy joint vel
-        self.observation_space = spaces.Box(low=-1, high=1, shape=(6 + 6 + 6 + 6,))
+        self.observation_space = spaces.Box(low=-1, high=1, shape=(6 + 6 + 6 + 6,), dtype=np.float32)
 
-        self.action_space = spaces.Box(low=-1, high=1, shape=(6,))
+        self.action_space = spaces.Box(low=-1, high=1, shape=(6,), dtype=np.float32)
 
         self.diffs = [JOINT_LIMITS[i][1] - JOINT_LIMITS[i][0] for i in range(6)]
 
@@ -67,7 +67,7 @@ class ErgoFightLiveEnv(gym.Env):
         self.controller_def.safe_rest()
         self.controller_att.safe_rest()
 
-        time.sleep(1)  # FIXME: run loop, check joints
+        time.sleep(.6)  # FIXME: run loop, check joints
 
         self.randomize(robot=1, scaling=self.scaling)
 
