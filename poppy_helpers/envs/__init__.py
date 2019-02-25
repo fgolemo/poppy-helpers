@@ -1,1 +1,2 @@
 from poppy_helpers.envs.ergo_fight_live_swordonly import ErgoFightLiveEnv
+from poppy_helpers.envs.ergo_reacher_live import ErgoReacherLiveEnv

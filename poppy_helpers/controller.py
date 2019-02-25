@@ -140,6 +140,9 @@ class ZMQController():
         self.socket.send_json(req)
         self._check_answer(self.socket.recv_json(), "goto_pos")
 
+    def goto_normalized(self, pos):
+        self.goto_pos(np.array(pos)*90)
+
     def get_pos(self):
         req = {"robot": {"get_pos_speed": {}}}
         self.socket.send_json(req)
