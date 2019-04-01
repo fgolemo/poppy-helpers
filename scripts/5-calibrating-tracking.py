@@ -8,7 +8,7 @@ from realsense_tracker.tracker import Tracker
 from poppy_helpers.config import config_dir
 from poppy_helpers.controller import ZMQController
 
-ROBOT = False
+ROBOT = True
 
 cam = Camera(color=True)
 tracker = Tracker((54, 68, 11), (92, 255, 224))
@@ -36,7 +36,7 @@ print("forward, 2... 1...")
 time.sleep(2)
 
 while True:
-    center, radius, x, y = tracker.get_frame_and_track(cam)
+    _, (center, radius, x, y) = tracker.get_frame_and_track(cam)
     if center is not None and radius > 10:
         break
 
@@ -45,12 +45,12 @@ calibration[0] = center
 
 # full backward
 if ROBOT:
-    zmq.goto_normalized([0, -1, -1, 0, 0, 0])
+    zmq.goto_normalized([0, -1, 0, 0, -1, 0])
 print("backward, 2... 1...")
-time.sleep(2)
+time.sleep(3)
 
 while True:
-    center, radius, x, y = tracker.get_frame_and_track(cam)
+    _, (center, radius, x, y) = tracker.get_frame_and_track(cam)
     if center is not None and radius > 10:
         break
 
@@ -64,7 +64,7 @@ print("upward, 2... 1...")
 time.sleep(2)
 
 while True:
-    center, radius, x, y = tracker.get_frame_and_track(cam)
+    _, (center, radius, x, y) = tracker.get_frame_and_track(cam)
     if center is not None and radius > 10:
         break
 

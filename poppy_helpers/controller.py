@@ -141,7 +141,10 @@ class ZMQController():
         self._check_answer(self.socket.recv_json(), "goto_pos")
 
     def goto_normalized(self, pos):
-        self.goto_pos(np.array(pos)*90)
+        pos = np.array(pos)
+        pos[2] = np.clip(pos[2], a_min=max(-1-pos[1], -1), a_max=1) # to prevent robot from hitting the case
+
+        self.goto_pos((pos*90).tolist())
 
     def get_pos(self):
         req = {"robot": {"get_pos_speed": {}}}
