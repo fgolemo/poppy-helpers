@@ -26,7 +26,9 @@ ITERATIONS_MAX = 10000  # pause the robot for maintenance every N steps
 # BUFFER_MAX_SIZE = 100  # write buffer to disk every <- steps
 
 class ErgoReacherLiveEnv(gym.Env):
-    def __init__(self):
+    def __init__(self, multi=False, multi_no=3):
+        self.multi_goal = multi
+        self.no_goals = multi_no
         self.rand = Randomizer()
 
         # self.step_in_episode = 0
@@ -59,6 +61,8 @@ class ErgoReacherLiveEnv(gym.Env):
         self.pause_counter = 0
 
         self.last_speed = 100
+
+        self.goals_reached = 0
 
         # self.goal_states=[]
 
@@ -211,6 +215,11 @@ class ErgoReacherLiveEnv(gym.Env):
         if reward > MIN_DIST:  # this is a bit arbitrary, but works well
             done = True
             reward = 1
+            if self.multi_goal:
+                self.goals_reached += 1
+                self.goal = self.rhis.sampleSimplePoint()
+                if not self.goals_reached == self.no_goals:
+                    done = False
 
         return reward, done, distance, frame3.copy()
 
