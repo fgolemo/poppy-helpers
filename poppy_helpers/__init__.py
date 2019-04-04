@@ -48,3 +48,11 @@ register(
     kwargs={'multi':True},
 )
 
+register(
+    id='ErgoReacher-Tracking-Live-v1',
+    entry_point='poppy_helpers.envs:ErgoReacherLiveEnv',
+    timestep_limit=10000000,
+    reward_threshold=1,
+    kwargs={'tracking':True},
+)
+

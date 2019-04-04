@@ -9,7 +9,7 @@ import numpy as np
 from gym import spaces
 from gym_ergojr.utils.math import RandomPointInHalfSphere
 from realsense_tracker.camera import Camera
-from realsense_tracker.tracker import Tracker, TRACKING_GREEN
+from realsense_tracker.tracker import Tracker, TRACKING_GREEN, TRACKING_YELLOW
 from poppy_helpers.config import config_dir
 from poppy_helpers.constants import JOINT_LIMITS, MOVE_EVERY_N_STEPS, MAX_REFRESHRATE, JOINT_LIMITS_SPEED, \
     SIM_VELOCITY_SCALING
@@ -26,10 +26,13 @@ ITERATIONS_MAX = 10000  # pause the robot for maintenance every N steps
 # BUFFER_MAX_SIZE = 100  # write buffer to disk every <- steps
 
 class ErgoReacherLiveEnv(gym.Env):
-    def __init__(self, multi=False, multi_no=3):
+    def __init__(self, multi=False, multi_no=3, tracking=False):
         self.multi_goal = multi
         self.no_goals = multi_no
+        self.tracking = tracking
         self.rand = Randomizer()
+
+        self.goal = None
 
         # self.step_in_episode = 0
 
@@ -51,10 +54,14 @@ class ErgoReacherLiveEnv(gym.Env):
 
         self.cam = Camera(color=True)
         self.tracker = Tracker(TRACKING_GREEN["maxime_lower"], TRACKING_GREEN["maxime_upper"])
+        if self.tracking:
+            self.tracker_goal = Tracker(TRACKING_YELLOW["duckie_lower"], TRACKING_YELLOW["duckie_upper"])
+
         self.calibration = np.load(os.path.join(config_dir(), "calib.npz"))["calibration"].astype(np.int16)
 
         self.last_step_time = time.time()
-        self.pts = deque(maxlen=32)
+        self.pts_tip = deque(maxlen=32)
+        self.pts_goal = deque(maxlen=32)
 
         self.last_frame = np.ones((480, 640, 3), dtype=np.uint8)
 
@@ -91,9 +98,10 @@ class ErgoReacherLiveEnv(gym.Env):
         np.random.seed(seed)
 
     def reset(self):
-        self.goal = self.rhis.sampleSimplePoint()
-
         self.setSpeed(100)  # do resetting at a normal speed
+
+        if not self.tracking:
+            self.goal = self.rhis.sampleSimplePoint()
 
         # goals = []
 
@@ -107,7 +115,8 @@ class ErgoReacherLiveEnv(gym.Env):
         qpos = np.random.uniform(low=-0.2, high=0.2, size=6)
         qpos[[0, 3]] = 0
 
-        self.pts.clear()
+        self.pts_tip.clear()
+
         add_text(self.last_frame, "=== RESETTING ===")
 
         if (self.pause_counter > ITERATIONS_MAX):
@@ -130,8 +139,14 @@ class ErgoReacherLiveEnv(gym.Env):
         return self._get_obs()
 
     def _get_obs(self):
+        if self.goal is None:
+            return np.zeros(8)
+
         pv = self.controller.get_posvel()
-        self.observation = self._normalize(pv)[[1, 2, 4, 5, 7, 8, 10, 11]]  # leave out joint0/3
+        if not self.tracking:
+            self.observation = self._normalize(pv)[[1, 2, 4, 5, 7, 8, 10, 11]]  # leave out joint0/3
+        else:
+            self.observation = self._normalize(pv)[[1, 2, 4, 7, 8, 10]]  # leave out joint0/3/5
         self.observation = np.hstack((self.observation, self.rhis.normalize(self.goal)[1:]))
         return self.observation
 
@@ -164,30 +179,30 @@ class ErgoReacherLiveEnv(gym.Env):
         # print ([x_d, y_d])
         return np.array([int(round(x_d)), int(round(y_d))])
 
-    def _render_img(self, frame, center, radius, x, y):
+    def _render_img(self, frame, center, radius, x, y, pts, color_a=(0, 255, 255), color_b=(0, 0, 255)):
         g = self._goal2pixel(self.goal)
         cv2.circle(frame, (g[0], g[1]), int(5), (255, 0, 255), 3)
 
         # circle center
-        cv2.circle(frame, (int(x), int(y)), int(radius), (0, 255, 255), 2)
+        cv2.circle(frame, (int(x), int(y)), int(radius), color_a, 2)
 
         # center of mass
-        cv2.circle(frame, center, 5, (0, 0, 255), -1)
+        cv2.circle(frame, center, 5, color_b, -1)
 
         # update the points queue
-        self.pts.appendleft(center)
+        pts.appendleft(center)
 
         # loop over the set of tracked points
-        for i in range(1, len(self.pts)):
+        for i in range(1, len(pts)):
             # if either of the tracked points are None, ignore
             # them
-            if self.pts[i - 1] is None or self.pts[i] is None:
+            if pts[i - 1] is None or pts[i] is None:
                 continue
 
             # otherwise, compute the thickness of the line and
             # draw the connecting lines
             thickness = int(np.sqrt(32 / float(i + 1)) * 2.5)
-            cv2.line(frame, self.pts[i - 1], self.pts[i], (0, 0, 255), thickness)
+            cv2.line(frame, pts[i - 1], pts[i], color_b, thickness)
 
         self.last_frame = frame.copy()
 
@@ -197,18 +212,40 @@ class ErgoReacherLiveEnv(gym.Env):
         done = False
 
         while True:
-            frame, (center, radius, x, y) = self.tracker.get_frame_and_track(self.cam)
+            frame = Camera.to_numpy(self.cam.get_color())[:, :, ::-1]  # RGB to BGR for cv2
+            hsv = self.tracker.blur_img(frame)
+            mask_tip = self.tracker.prep_image(hsv)
+
+            # center of mass, radius of enclosing circle, x/y of enclosing circle
+            center_tip, radius_tip, x_tip, y_tip = self.tracker.track(mask_tip)
+
+            if self.tracking:
+                mask_goal = self.tracker_goal.prep_image(hsv)
+                center_goal, radius_goal, x_goal, y_goal = self.tracker_goal.track(mask_goal)
 
             # grab more frames until the green blob is big enough / visible
-            if center is not None and radius > DETECTION_RADIUS:
+            if center_tip is not None and radius_tip > DETECTION_RADIUS:
                 break
 
         frame2 = np.ascontiguousarray(frame, dtype=np.uint8)
-        frame3 = self._render_img(frame2, center, radius, x, y)
 
-        pos = self._pixel2goal(center)
+        if self.tracking and center_goal is not None:
+            self.goal = np.zeros(3, dtype=np.float32)
+            self.goal[1:] = self._pixel2goal(center_goal)
 
-        reward = np.linalg.norm(np.array(self.goal[1:]) - np.array(pos))
+            frame2 = self._render_img(frame2, center_goal, radius_goal, x_goal, y_goal, pts=self.pts_goal)
+
+        if self.goal is not None:
+            frame2 = self._render_img(frame2, center_tip, radius_tip, x_tip, y_tip, pts=self.pts_tip,
+                                      color_a=(255, 255, 0), color_b=(255, 0, 0))
+
+        if center_goal is None:
+            self.goal = None
+            return 0, False, 99, frame2.copy()
+
+        pos_tip = self._pixel2goal(center_tip)
+
+        reward = np.linalg.norm(np.array(self.goal[1:]) - np.array(pos_tip))
         distance = reward.copy()
         reward *= -1  # the reward is the inverse distance
 
@@ -221,14 +258,18 @@ class ErgoReacherLiveEnv(gym.Env):
                 if not self.goals_reached == self.no_goals:
                     done = False
 
-        return reward, done, distance, frame3.copy()
+        return reward, done, distance, frame2.copy()
 
     def step(self, action):
         action_ = np.zeros(6, np.float32)
-        action_[[1, 2, 4, 5]] = action
+        if not self.tracking:
+            action_[[1, 2, 4, 5]] = action
+        else:
+            action_[[1, 2, 4]] = action
         action = np.clip(action_, -1, 1)
 
-        self.controller.goto_normalized(action)
+        if self.goal is not None:
+            self.controller.goto_normalized(action)
 
         reward, done, distance, frame = self._get_reward()
         cv2.imshow("Frame", frame)
@@ -249,33 +290,43 @@ class ErgoReacherLiveEnv(gym.Env):
 
 
 if __name__ == '__main__':
-    env = gym.make("ErgoReacher-Live-v1")
+    # env = gym.make("ErgoReacher-Live-v1")
+    # obs = env.reset()
+    # print(obs)
+    #
+    # print("forward")
+    #
+    # # forward
+    # env.unwrapped.goal = [0, .224, .102]
+    # for i in range(1000):
+    #     obs, rew, done, misc = env.step([1, -1, 0, 0])
+    #     # print(np.around(obs, 3))
+    #     print(rew)
+    #
+    # print("backward")
+    #
+    # # backward
+    # env.unwrapped.goal = [0, -.148, .016]
+    # for i in range(1000):
+    #     obs, rew, done, misc = env.step([-1, -1, 0, 0])
+    #     # print(np.around(obs, 3))
+    #     print(rew)
+    #
+    # print("upward")
+    #
+    # # backward
+    # env.unwrapped.goal = [0, .013, .25]
+    # for i in range(1000):
+    #     obs, rew, done, misc = env.step([.1, -1, -.1, 0])
+    #     # print(np.around(obs, 3))
+    #     print(rew)
+
+    env = gym.make("ErgoReacher-Tracking-Live-v1")
     obs = env.reset()
     print(obs)
 
-    print("forward")
-
     # forward
-    env.unwrapped.goal = [0, .224, .102]
-    for i in range(1000):
-        obs, rew, done, misc = env.step([1, -1, 0, 0])
-        # print(np.around(obs, 3))
-        print(rew)
-
-    print("backward")
-
-    # backward
-    env.unwrapped.goal = [0, -.148, .016]
-    for i in range(1000):
-        obs, rew, done, misc = env.step([-1, -1, 0, 0])
-        # print(np.around(obs, 3))
-        print(rew)
-
-    print("upward")
-
-    # backward
-    env.unwrapped.goal = [0, .013, .25]
-    for i in range(1000):
-        obs, rew, done, misc = env.step([.1, -1, -.1, 0])
+    for i in range(10000):
+        obs, rew, done, misc = env.step([0, 0, 0])
         # print(np.around(obs, 3))
         print(rew)
