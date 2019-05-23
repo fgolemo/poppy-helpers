@@ -168,6 +168,11 @@ class ZMQController():
         self.socket.send_json(req)
         self._check_answer(self.socket.recv_json(), "set_max_speed")
 
+    def set_color(self, motor_id, color):
+        req = {"robot": {"set_register_value": {"motor": "m{}".format(motor_id), "register": "led", "value": color}}}
+        self.socket.send_json(req)
+        self._check_answer(self.socket.recv_json(), "set_color")
+
     def rest(self):
         self.goto_pos([0]*6)
 

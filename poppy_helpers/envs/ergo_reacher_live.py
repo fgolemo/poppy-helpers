@@ -21,7 +21,8 @@ from realsense_tracker.utils import add_text
 DETECTION_RADIUS = 6  # minimum pixel radius of the green tracking blob, otherwise it's not detected
 MIN_DIST = -0.025  # if the distance is smaller than this, the episode is solved
 ITERATIONS_MAX = 10000  # pause the robot for maintenance every N steps
-
+GRIPPER_CLOSED_MAX_FRAMES = 100
+CLOSING_FRAMES = 7
 
 # BUFFER_MAX_SIZE = 100  # write buffer to disk every <- steps
 
@@ -45,15 +46,20 @@ class ErgoReacherLiveEnv(gym.Env):
                                             min_dist=0.1, halfsphere=True)
 
         # observation = 4 joints + 4 velocities + 2 coordinates for target
-        self.observation_space = spaces.Box(low=-1, high=1, shape=(4 + 4 + 2,), dtype=np.float32)  #
+        joints_no = 4
+        if self.tracking:
+            joints_no = 3
+
+        self.observation_space = spaces.Box(low=-1, high=1, shape=(joints_no + joints_no + 2,), dtype=np.float32)
 
         # action = 4 joint angles
-        self.action_space = spaces.Box(low=-1, high=1, shape=(4,), dtype=np.float32)  #
+        self.action_space = spaces.Box(low=-1, high=1, shape=(joints_no,), dtype=np.float32)
 
         self.diffs = [JOINT_LIMITS[i][1] - JOINT_LIMITS[i][0] for i in range(6)]
 
         self.cam = Camera(color=True)
         self.tracker = Tracker(TRACKING_GREEN["maxime_lower"], TRACKING_GREEN["maxime_upper"])
+        # self.tracker = Tracker(TRACKING_GREEN["duct_lower"], TRACKING_GREEN["duct_upper"])
         if self.tracking:
             self.tracker_goal = Tracker(TRACKING_YELLOW["duckie_lower"], TRACKING_YELLOW["duckie_upper"])
 
@@ -99,6 +105,12 @@ class ErgoReacherLiveEnv(gym.Env):
 
     def reset(self):
         self.setSpeed(100)  # do resetting at a normal speed
+
+        self.gripper_closed = False
+        self.gripper_closed_frames = 0
+        self.closest_distance = np.inf
+        self.ready_to_close = False
+        self.tracking_frames = 0
 
         if not self.tracking:
             self.goal = self.rhis.sampleSimplePoint()
@@ -161,7 +173,7 @@ class ErgoReacherLiveEnv(gym.Env):
         x_n = (pos[0] - self.calibration[0, 0]) / (self.calibration[1, 0] - self.calibration[0, 0])
         x_d = .224 - (x_n * (.224 + .148))
         y_n = (pos[1] - self.calibration[2, 1]) / (self.calibration[1, 1] - self.calibration[2, 1])
-        y_d = .25 - (y_n * (.25 - .016))
+        y_d = .25 - (y_n * (.23 - .046))  # .056 has been modified from the .016 below
         return np.array([x_d, y_d])
 
     def _goal2pixel(self, goal):
@@ -210,6 +222,7 @@ class ErgoReacherLiveEnv(gym.Env):
 
     def _get_reward(self):
         done = False
+        center_goal = None
 
         while True:
             frame = Camera.to_numpy(self.cam.get_color())[:, :, ::-1]  # RGB to BGR for cv2
@@ -239,9 +252,9 @@ class ErgoReacherLiveEnv(gym.Env):
             frame2 = self._render_img(frame2, center_tip, radius_tip, x_tip, y_tip, pts=self.pts_tip,
                                       color_a=(255, 255, 0), color_b=(255, 0, 0))
 
-        if center_goal is None:
+        if self.tracking and center_goal is None:
             self.goal = None
-            return 0, False, 99, frame2.copy()
+            return 0, False, np.inf, frame2.copy()
 
         pos_tip = self._pixel2goal(center_tip)
 
@@ -266,6 +279,16 @@ class ErgoReacherLiveEnv(gym.Env):
             action_[[1, 2, 4, 5]] = action
         else:
             action_[[1, 2, 4]] = action
+            action_[5] = 50 / 90
+
+            if self.gripper_closed:
+                self.gripper_closed_frames += 1
+                action_[5] = -10 / 90
+
+                if self.gripper_closed_frames >= GRIPPER_CLOSED_MAX_FRAMES:
+                    self.gripper_closed = False
+                    self.gripper_closed_frames = 0
+
         action = np.clip(action_, -1, 1)
 
         if self.goal is not None:
@@ -274,6 +297,23 @@ class ErgoReacherLiveEnv(gym.Env):
         reward, done, distance, frame = self._get_reward()
         cv2.imshow("Frame", frame)
         cv2.waitKey(1)
+
+        if self.tracking:
+            done = False
+
+        if not self.gripper_closed:
+            if distance < self.closest_distance:
+                self.closest_distance = distance
+                self.ready_to_close += 1
+            else:
+                if self.ready_to_close > CLOSING_FRAMES:
+                    self.ready_to_close = 0
+                    self.closest_distance = np.inf
+                    self.gripper_closed = True  # only takes effect on next step
+                else:
+                    self.tracking_frames += 1
+                    if self.tracking_frames > 50:
+                        self.closest_distance = np.inf
 
         dt = (time.time() - self.last_step_time) * 1000
         if dt < MAX_REFRESHRATE:
