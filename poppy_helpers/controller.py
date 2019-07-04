@@ -132,7 +132,7 @@ class ZMQController():
         print("Connected.")
 
     def _check_answer(self, answer, function):
-        if answer: # answer is dict, empty dicts are False
+        if answer and "unicode not allowed, use send_string" != answer["error"]: # answer is dict, empty dicts are False
             print ("ERROR: in ",function,answer)
 
     def goto_pos(self, pos):

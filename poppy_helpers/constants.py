@@ -7,6 +7,13 @@ JOINT_LIMITS = [
     (-90, 90)
 ]
 
+# Pusher
+JOINT_LIMITS_P = [
+    (-90, 90),
+    (-90, 90),
+    (-90, 90)
+]
+
 VEL_MAX = 150
 VEL_MIN = -150
 
