@@ -28,11 +28,12 @@ calibration = np.zeros((3, 2), dtype=np.uint16)
 # full right
 
 if ROBOT:
-    zmq.goto_pos([-90, 0, 0])
-time.sleep(2)
+    zmq.goto_pos([90, 0, 0])
+
+input("press enter")
 
 while True:
-    _, (center, radius, x, y) = tracker.get_frame_and_track(cam)
+    _, (center, radius, x, y), _ = tracker.get_frame_and_track(cam)
     if center is not None and radius > 10:
         break
 
@@ -42,10 +43,11 @@ calibration[0] = center
 # full middle
 if ROBOT:
     zmq.goto_pos([0, 0, 0])
-time.sleep(3)
+
+input("press enter")
 
 while True:
-    _, (center, radius, x, y) = tracker.get_frame_and_track(cam)
+    _, (center, radius, x, y), _ = tracker.get_frame_and_track(cam)
     if center is not None and radius > 10:
         break
 
@@ -54,11 +56,12 @@ calibration[1] = center
 
 # left
 if ROBOT:
-    zmq.goto_pos([1, 0, 0])
-time.sleep(2)
+    zmq.goto_pos([-90, 0, 0])
+
+input("press enter")
 
 while True:
-    _, (center, radius, x, y) = tracker.get_frame_and_track(cam)
+    _, (center, radius, x, y), _ = tracker.get_frame_and_track(cam)
     if center is not None and radius > 10:
         break
 
