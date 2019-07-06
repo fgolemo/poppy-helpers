@@ -43,7 +43,7 @@ register(
 register(
     id='ErgoPusher-Live-v1',
     entry_point='poppy_helpers.envs:ErgoPusherLiveEnv',
-    timestep_limit=1000,
+    timestep_limit=100,
     reward_threshold=1,
     kwargs={},
 )

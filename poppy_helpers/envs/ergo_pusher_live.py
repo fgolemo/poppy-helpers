@@ -8,78 +8,121 @@ import cv2
 import numpy as np
 from gym import spaces
 from gym_ergojr.models import MODEL_PATH
-from gym_ergojr.utils.math import RandomPointInHalfSphere
 from realsense_tracker.camera import Camera
 from realsense_tracker.tracker import Tracker, TRACKING_GREEN, TRACKING_RED
 from poppy_helpers.config import config_dir
-from poppy_helpers.constants import JOINT_LIMITS, MOVE_EVERY_N_STEPS, MAX_REFRESHRATE, JOINT_LIMITS_SPEED, \
-    SIM_VELOCITY_SCALING, JOINT_LIMITS_P
-from poppy_helpers.controller import SwordFightZMQController, ZMQController
+from poppy_helpers.controller import ZMQController
 
 from poppy_helpers.randomizer import Randomizer
 from realsense_tracker.utils import add_text
 
 DETECTION_RADIUS = 6  # minimum pixel radius of the green tracking blob, otherwise it's not detected
-MIN_DIST = -0.025  # if the distance is smaller than this, the episode is solved
+MIN_DIST = 0.01  # if the distance is smaller than this, the episode is solved
 ITERATIONS_MAX = 10000  # pause the robot for maintenance every N steps
+
+PUSHER_GOAL_X = [-.2, -.1]
+PUSHER_GOAL_Y = [-.1, .05]
+PUSHER_PUCK_X = [-0.07, -0.10]
+PUSHER_PUCK_Y = [0.05, 0.08]
+
+PUSHER_PUCK_X_NORM = [
+    min(PUSHER_PUCK_X[0], PUSHER_PUCK_X[0]),
+    max(PUSHER_PUCK_X[1], PUSHER_PUCK_X[1])
+]
+PUSHER_PUCK_Y_NORM = [
+    min(PUSHER_PUCK_Y[0], PUSHER_PUCK_Y[0]),
+    max(PUSHER_PUCK_Y[1], PUSHER_PUCK_Y[1])
+]
 
 
 class ErgoPusherLiveEnv(gym.Env):
     def __init__(self):
-        self.rand = Randomizer()
+        self.goals_done = 0
 
-        self.goal = None
+        self.metadata = {'render.modes': ['human']}
 
-        # self.step_in_episode = 0
+        # observation = 3 joints + 3 velocities + 2 puck position + 2 coordinates for target
+        self.observation_space = spaces.Box(
+            low=-1, high=1, shape=(3 + 3 + 2 + 2,), dtype=np.float32)  #
 
-        self.metadata = {
-            'render.modes': ['human', 'rgb_array']
-        }
-
-
-        self.observation_space = spaces.Box(low=-1, high=1, shape=(3 + 3 + 2,), dtype=np.float32)
-
-        # action = 4 joint angles
-        self.action_space = spaces.Box(low=-1, high=1, shape=(3,), dtype=np.float32)
-
-        self.diffs = [JOINT_LIMITS_P[i][1] - JOINT_LIMITS_P[i][0] for i in range(3)]
+        # action = 3 joint angles
+        self.action_space = spaces.Box(
+            low=-1, high=1, shape=(3,), dtype=np.float32)  #
 
         self.cam = Camera(color=True)
         self.tracker_puck = Tracker(TRACKING_RED["pusher_lower"], TRACKING_RED["pusher_upper"])
         self.tracker_pusher = Tracker(TRACKING_GREEN["pusher_lower"], TRACKING_GREEN["pusher_upper"])
 
-
-        # TODO
         self.calib_sim = np.load(os.path.join(MODEL_PATH, "calibration-pusher-sim.npz"))['arr_0']
+        self.calib_real = np.load(os.path.join(config_dir(), "calibration-pusher-real.npz"))["arr_0"].astype(np.int16)
 
+        self.x_rr = self.calib_real[0, 0]
+        self.x_rl = self.calib_real[2, 0]
+        self.x_sr = self.calib_sim[0, 0]
+        self.x_sl = self.calib_sim[2, 0]
 
-        self.calibration = np.load(os.path.join(config_dir(), "calib.npz"))["calibration"].astype(np.int16)
+        self.y_rr = self.calib_real[0, 1]
+        self.y_rl = self.calib_real[2, 1]
+        self.y_sr = self.calib_sim[0, 1]
+        self.y_sl = self.calib_sim[2, 1]
+
+        self.x_rm = self.calib_real[1, 0]
+        self.y_rm = self.calib_real[1, 1]
+        self.x_sm = self.calib_sim[1, 0]
+        self.y_sm = self.calib_sim[1, 1]
+
+        self.x_rc = (self.x_rl + self.x_rr) / 2
+        self.y_rc = (self.y_rl + self.y_rr) / 2
+
+        # [0.13473208 0.00849917]
+        # [0.00820219 0.1347505]
+        # [-0.13471367  0.00878573]
+
+        # [56 266]
+        # [226 441]
+        # [398 251]
 
         self.last_step_time = time.time()
         self.pts_tip = deque(maxlen=32)
-        self.pts_goal = deque(maxlen=32)
+        self.pts_puck = deque(maxlen=32)
 
-        self.last_frame = np.ones((480, 640, 3), dtype=np.uint8)
+        self.rest_pos = np.array([-.5, 1, .5])
 
-        self.pause_counter = 0
+        # self.last_frame = np.ones((480, 640, 3), dtype=np.uint8)
 
-        self.last_speed = 100
+        # DEBUGGING CODE
 
-        self.goals_reached = 0
+        # frame = Camera.to_numpy(self.cam.get_color())[:, :, ::-1]
+        # frame2 = np.ascontiguousarray(frame, dtype=np.uint8)
+        # print (frame.shape)
+        # for _ in range(500):
+        #     self._sample_goal()
+        #
+        #     pix = self._sim2pixel(self.goal)
+        #     print(self.goal, pix)
+        #     cv2.circle(frame2, (int(pix[0]), int(pix[1])), 5, (255,0,0), 4)
+        #
+        # cv2.circle(frame2, (int(50), int(50)), 10, (0, 0, 0), 4)
+        # cv2.circle(frame2, (int(50), int(5)), 10, (0, 255, 0), 4)
+        # cv2.circle(frame2, (int(5), int(50)), 10, (0, 255, 255), 4)
+        #
+        # cv2.imshow("Frame2", frame2)
+        # cv2.waitKey(10000)
+        #
+        # quit()
 
-
-
-        self._init_robot()
+        self.controller = ZMQController(host="pokey.local")
+        self._setSpeedCompliance()
 
         super().__init__()
 
-    def _init_robot(self):
-        self.controller = ZMQController(host="flogo3.local")
-        self._setSpeedCompliance()
+    def sim2real(self, act):
+        act = np.clip(act, -1, 1)
+        return ((np.array(act) + self.rest_pos) * -90).tolist()
 
     def _setSpeedCompliance(self):
         self.controller.compliant(False)
-        self.controller.set_max_speed(500)  # default: 100
+        self.controller.set_max_speed(100)  # default: 100
 
     def setSpeed(self, speed):
         assert speed > 0 and speed < 1000
@@ -87,105 +130,114 @@ class ErgoPusherLiveEnv(gym.Env):
         self.last_speed = speed
 
     def seed(self, seed=None):
-        np.random.seed(seed)
+        return [np.random.seed(seed)]
+
+    def step(self, action):
+        action = self.sim2real(action)
+        self.controller.goto_pos(action)
+
+        reward, done, distance, frame, center_puck = self._get_reward()
+        cv2.imshow("Live Feed", frame)
+        cv2.waitKey(1)
+
+        obs = self._get_obs(center_puck)
+        return obs, reward, done, {"distance": distance}
+
+    def _sim2pixel(self, sim_coords):
+        x_t = sim_coords[0]
+        x = -x_t * (self.x_rl - self.x_rr) / (self.x_sr - self.x_sl) + self.x_rc
+
+        y_t = sim_coords[1]
+        y = (y_t - self.y_sr) * (self.y_rm - self.y_rc) / (self.y_sm - self.y_sr) + self.y_rc
+
+        return [int(x), int(y)]
+
+    def _pixel2sim(self, pix_coords):
+        x_g = pix_coords[0]
+        x = (self.x_rc - x_g) * (self.x_sr - self.x_sl) / (self.x_rl - self.x_rr)
+
+        y_g = pix_coords[1]
+        y = (y_g - self.y_rc) * (self.y_sm - self.y_sr) / (self.y_rm - self.y_rc) + self.y_sr
+
+        return [x, y]
+
+    def _img_and_track(self):
+        while True:
+            frame = Camera.to_numpy(self.cam.get_color())[:, :, ::-1]  # RGB to BGR for cv2
+            hsv = self.tracker_pusher.blur_img(frame)
+            # mask_tip = self.tracker_pusher.prep_image(hsv)
+            #
+            # # center of mass, radius of enclosing circle, x/y of enclosing circle
+            # center_tip, radius_tip, x_tip, y_tip = self.tracker_pusher.track(mask_tip)
+
+            mask_puck = self.tracker_puck.prep_image(hsv)
+            center_puck, radius_puck, x_puck, y_puck = self.tracker_puck.track(mask_puck)
+
+            # grab more frames until the green blob is big enough / visible
+            if center_puck is not None and radius_puck > DETECTION_RADIUS:
+                break
+
+        frame2 = np.ascontiguousarray(frame, dtype=np.uint8)
+
+        goal = self._sim2pixel(self.goal)
+
+        self._render_tracking(frame2, center_puck, radius_puck, x_puck, y_puck, pts=self.pts_puck)
+
+        cv2.circle(frame2, tuple(goal), 10, (255, 0, 255), 4)
+
+        return frame2, self._pixel2sim(center_puck)
 
     def reset(self):
-        self.setSpeed(100)  # do resetting at a normal speed
+        self.setSpeed(100)
 
-        self.gripper_closed = False
-        self.gripper_closed_frames = 0
-        self.closest_distance = np.inf
-        self.ready_to_close = False
-        self.tracking_frames = 0
+        self._sample_goal_and_puck()
 
-        if not self.tracking:
-            self.goal = self.rhis.sampleSimplePoint()
+        qpos = np.random.uniform(low=-0.1, high=0.1, size=3)
 
-        # goals = []
+        self.controller.goto_pos(self.sim2real(qpos))
 
-        # for _ in range(100000):
-        #     goals.append(self.rhis.sampleSimplePoint())
-        #
-        # goals = np.array(goals)
-        # print ("x min/max",goals[:,1].min(),goals[:,1].max())
-        # print ("y min/max",goals[:,2].min(),goals[:,2].max())
+        while True:
+            frame, center = self._img_and_track()
 
-        qpos = np.random.uniform(low=-0.2, high=0.2, size=6)
-        qpos[[0, 3]] = 0
+            puck = self._sim2pixel(self.puck)
 
-        self.pts_tip.clear()
+            cv2.circle(frame, tuple(puck), 10, (255, 0, 0), 4)
 
-        add_text(self.last_frame, "=== RESETTING ===")
+            add_text(frame, "MOVE PUCK TO BLUE CIRCLE AND PRESS KEY", (0, 0, 0), .5)
 
-        if (self.pause_counter > ITERATIONS_MAX):
-            self.pause_counter = 0
-            self.controller.compliant(True)
-            input("\n\n=== MAINTENANCE: PLEASE CHECK THE ROBOT AND THEN PRESS ENTER TO CONTINUE ===")
-            self.controller.compliant(False)
-            time.sleep(.5)  # wait briefly to make sure all joints are non-compliant / powered
+            cv2.imshow("Live Feed", frame)
+            key = cv2.waitKey(1) & 0xFF
 
-        # this counts as rest position
-        self.controller.goto_normalized(qpos)
-
-        cv2.imshow("Frame", self.last_frame)
-        cv2.waitKey(1000)
-
-        self.setSpeed(self.last_speed)
-
-        self.last_step_time = time.time()
+            if key != 255:
+                break
 
         return self._get_obs()
 
-    def _get_obs(self):
-        if self.goal is None:
-            return np.zeros(8)
-
+    def _get_obs(self, center_puck=None):
         pv = self.controller.get_posvel()
-        if not self.tracking:
-            self.observation = self._normalize(pv)[[1, 2, 4, 5, 7, 8, 10, 11]]  # leave out joint0/3
+
+        goal = self.normalize_goal()
+
+        if center_puck is None:
+            puck = self.normalize_puck(self.puck)
         else:
-            self.observation = self._normalize(pv)[[1, 2, 4, 7, 8, 10]]  # leave out joint0/3/5
-        self.observation = np.hstack((self.observation, self.rhis.normalize(self.goal)[1:]))
+            puck = self.normalize_puck(center_puck)
+
+        self.observation = np.hstack((self._normalize(pv), puck, goal))
         return self.observation
 
     def _normalize(self, pos):
         pos = np.array(pos).astype('float32')
-        pos[:6] = ((pos[:6] + 90) / 180) * 2 - 1  # positions
-        pos[6:] = ((pos[6:] + 300) / 600) * 2 - 1  # velocities
+        pos[:3] = ((pos[:3] + 90) / 180) * 2 - 1  # positions
+        pos[3:] = ((pos[3:] + 300) / 600) * 2 - 1  # velocities
         return pos
 
-    def _pixel2goal(self, camcenter):
-        pos = np.array(camcenter).astype(np.int16)
-        x_n = (pos[0] - self.calibration[0, 0]) / (self.calibration[1, 0] - self.calibration[0, 0])
-        x_d = .224 - (x_n * (.224 + .148))
-        y_n = (pos[1] - self.calibration[2, 1]) / (self.calibration[1, 1] - self.calibration[2, 1])
-        y_d = .25 - (y_n * (.23 - .046))  # .056 has been modified from the .016 below
-        return np.array([x_d, y_d])
-
-    def _goal2pixel(self, goal):
-        # print (self.goal[1:], self.calibration)
-
-        # x_n = (float(goal[1]) + .0979) / (.2390 + .0979)
-        # x_d = x_n * (self.calibration[0, 0] - self.calibration[1, 0]) + self.calibration[1, 0]
-        # y_n = (float(goal[2]) - .0437) / (.2458 - .0437)
-        # y_d = self.calibration[0, 1] - (y_n * (self.calibration[0, 1] - self.calibration[2, 1]))
-
-        x_n = (float(goal[1]) + .148) / (.224 + .148)
-        x_d = x_n * (self.calibration[0, 0] - self.calibration[1, 0]) + self.calibration[1, 0]
-        y_n = (float(goal[2]) - .016) / (.25 - .016)
-        y_d = self.calibration[0, 1] - (y_n * (self.calibration[0, 1] - self.calibration[2, 1]))
-        # print ([x_d, y_d])
-        return np.array([int(round(x_d)), int(round(y_d))])
-
-    def _render_img(self, frame, center, radius, x, y, pts, color_a=(0, 255, 255), color_b=(0, 0, 255)):
-        g = self._goal2pixel(self.goal)
-        cv2.circle(frame, (g[0], g[1]), int(5), (255, 0, 255), 3)
-
+    def _render_tracking(self, frame, center, radius, x, y, pts):
         # circle center
-        cv2.circle(frame, (int(x), int(y)), int(radius), color_a, 2)
+        cv2.circle(frame, (int(x), int(y)), int(radius), (0, 255, 255), 2)
 
         # center of mass
-        cv2.circle(frame, center, 5, color_b, -1)
+        cv2.circle(frame, center, 5, (0, 0, 255), -1)
 
         # update the points queue
         pts.appendleft(center)
@@ -200,159 +252,64 @@ class ErgoPusherLiveEnv(gym.Env):
             # otherwise, compute the thickness of the line and
             # draw the connecting lines
             thickness = int(np.sqrt(32 / float(i + 1)) * 2.5)
-            cv2.line(frame, pts[i - 1], pts[i], color_b, thickness)
-
-        self.last_frame = frame.copy()
+            cv2.line(frame, pts[i - 1], pts[i], (0, 0, 255), thickness)
 
         return frame
 
+
+    def _sample_goal_and_puck(self):
+        self.goal = [
+            np.random.uniform(PUSHER_GOAL_X[0], PUSHER_GOAL_X[1]),
+            np.random.uniform(PUSHER_GOAL_Y[0], PUSHER_GOAL_Y[1])
+        ]
+        self.puck = [
+            np.random.uniform(PUSHER_PUCK_X[0], PUSHER_PUCK_X[1]),
+            np.random.uniform(PUSHER_PUCK_Y[0], PUSHER_PUCK_Y[1])
+        ]
+
+    def normalize_goal(self):
+        x = (self.goal[0] - PUSHER_GOAL_X[0]) / (
+                PUSHER_GOAL_X[1] - PUSHER_GOAL_X[0])
+        y = (self.goal[1] - PUSHER_GOAL_Y[0]) / (
+                PUSHER_GOAL_Y[1] - PUSHER_GOAL_Y[0])
+        return np.array([x, y])
+
+    def normalize_puck(self, puck):
+        x = (puck[0] - PUSHER_PUCK_X_NORM[0]) / (
+                PUSHER_PUCK_X_NORM[1] - PUSHER_PUCK_X_NORM[0])
+        y = (puck[1] - PUSHER_PUCK_Y_NORM[0]) / (
+                PUSHER_PUCK_Y_NORM[1] - PUSHER_PUCK_Y_NORM[0])
+        return np.array([x, y])
+
     def _get_reward(self):
         done = False
-        center_goal = None
 
-        while True:
-            frame = Camera.to_numpy(self.cam.get_color())[:, :, ::-1]  # RGB to BGR for cv2
-            hsv = self.tracker.blur_img(frame)
-            mask_tip = self.tracker.prep_image(hsv)
+        frame, center_puck = self._img_and_track()
 
-            # center of mass, radius of enclosing circle, x/y of enclosing circle
-            center_tip, radius_tip, x_tip, y_tip = self.tracker.track(mask_tip)
-
-            if self.tracking:
-                mask_goal = self.tracker_goal.prep_image(hsv)
-                center_goal, radius_goal, x_goal, y_goal = self.tracker_goal.track(mask_goal)
-
-            # grab more frames until the green blob is big enough / visible
-            if center_tip is not None and radius_tip > DETECTION_RADIUS:
-                break
-
-        frame2 = np.ascontiguousarray(frame, dtype=np.uint8)
-
-        if self.tracking and center_goal is not None:
-            self.goal = np.zeros(3, dtype=np.float32)
-            self.goal[1:] = self._pixel2goal(center_goal)
-
-            frame2 = self._render_img(frame2, center_goal, radius_goal, x_goal, y_goal, pts=self.pts_goal)
-
-        if self.goal is not None:
-            frame2 = self._render_img(frame2, center_tip, radius_tip, x_tip, y_tip, pts=self.pts_tip,
-                                      color_a=(255, 255, 0), color_b=(255, 0, 0))
-
-        if self.tracking and center_goal is None:
-            self.goal = None
-            return 0, False, np.inf, frame2.copy()
-
-        pos_tip = self._pixel2goal(center_tip)
-
-        reward = np.linalg.norm(np.array(self.goal[1:]) - np.array(pos_tip))
+        reward = np.linalg.norm(np.array(self.goal) - np.array(center_puck))
         distance = reward.copy()
-        reward *= -1  # the reward is the inverse distance
 
-        if reward > MIN_DIST:  # this is a bit arbitrary, but works well
+        reward *= -1  # the reward is the inverse distance
+        if distance < MIN_DIST:  # this is a bit arbitrary, but works well
             done = True
             reward = 1
-            if self.multi_goal:
-                self.goals_reached += 1
-                self.goal = self.rhis.sampleSimplePoint()
-                if not self.goals_reached == self.no_goals:
-                    done = False
 
-        return reward, done, distance, frame2.copy()
-
-    def step(self, action):
-        action_ = np.zeros(6, np.float32)
-        if not self.tracking:
-            action_[[1, 2, 4, 5]] = action
-        else:
-            action_[[1, 2, 4]] = action
-            action_[5] = 50 / 90
-
-            if self.gripper_closed:
-                self.gripper_closed_frames += 1
-                action_[5] = -10 / 90
-
-                if self.gripper_closed_frames >= GRIPPER_CLOSED_MAX_FRAMES:
-                    self.gripper_closed = False
-                    self.gripper_closed_frames = 0
-
-        action = np.clip(action_, -1, 1)
-
-        if self.goal is not None:
-            self.controller.goto_normalized(action)
-
-        reward, done, distance, frame = self._get_reward()
-        cv2.imshow("Frame", frame)
-        cv2.waitKey(1)
-
-        if self.tracking:
-            done = False
-
-        if not self.gripper_closed:
-            if distance < self.closest_distance:
-                self.closest_distance = distance
-                self.ready_to_close += 1
-            else:
-                if self.ready_to_close > CLOSING_FRAMES:
-                    self.ready_to_close = 0
-                    self.closest_distance = np.inf
-                    self.gripper_closed = True  # only takes effect on next step
-                else:
-                    self.tracking_frames += 1
-                    if self.tracking_frames > 50:
-                        self.closest_distance = np.inf
-
-        dt = (time.time() - self.last_step_time) * 1000
-        if dt < MAX_REFRESHRATE:
-            time.sleep((MAX_REFRESHRATE - dt) / 1000)
-
-        self.last_step_time = time.time()
-
-        self.pause_counter += 1
-
-        return self._get_obs(), reward, done, {"distance": distance, "img": frame}
-
-    def render(self, mode='human', close=False):
-        pass
+        return reward, done, distance, frame, center_puck
 
 
 if __name__ == '__main__':
-    # env = gym.make("ErgoReacher-Live-v1")
-    # obs = env.reset()
-    # print(obs)
-    #
-    # print("forward")
-    #
-    # # forward
-    # env.unwrapped.goal = [0, .224, .102]
-    # for i in range(1000):
-    #     obs, rew, done, misc = env.step([1, -1, 0, 0])
-    #     # print(np.around(obs, 3))
-    #     print(rew)
-    #
-    # print("backward")
-    #
-    # # backward
-    # env.unwrapped.goal = [0, -.148, .016]
-    # for i in range(1000):
-    #     obs, rew, done, misc = env.step([-1, -1, 0, 0])
-    #     # print(np.around(obs, 3))
-    #     print(rew)
-    #
-    # print("upward")
-    #
-    # # backward
-    # env.unwrapped.goal = [0, .013, .25]
-    # for i in range(1000):
-    #     obs, rew, done, misc = env.step([.1, -1, -.1, 0])
-    #     # print(np.around(obs, 3))
-    #     print(rew)
+    env = gym.make("ErgoPusher-Live-v1")
 
-    env = gym.make("ErgoReacher-Tracking-Live-v1")
-    obs = env.reset()
-    print(obs)
+    for _ in range(3):
+        print ("=== RESET ===")
+        obs = env.reset()
 
-    # forward
-    for i in range(10000):
-        obs, rew, done, misc = env.step([0, 0, 0])
-        # print(np.around(obs, 3))
-        print(rew)
+        start = time.time()
+
+        # forward
+        for i in range(101):
+            obs, rew, done, misc = env.step([0, 0, 0])
+            # print(rew, done, misc)
+
+        diff = time.time() - start
+        print ("diff",diff)

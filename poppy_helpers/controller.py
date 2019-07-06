@@ -127,6 +127,7 @@ class ZMQController():
     def __init__(self, host, port=5757):
         context = zmq.Context()
         self.socket = context.socket(zmq.PAIR)
+
         print("Connecting to robot...")
         self.socket.connect("tcp://{}:{}".format(host, port))
         print("Connected.")
@@ -136,6 +137,8 @@ class ZMQController():
             print ("ERROR: in ",function,answer)
 
     def goto_pos(self, pos):
+        if type(pos) == type(np.ndarray([])):
+            pos = pos.tolist()
         req = {"robot": {"set_pos": {"positions": pos}}}
         self.socket.send_json(req)
         self._check_answer(self.socket.recv_json(), "goto_pos")
@@ -189,3 +192,6 @@ class ZMQController():
 
 
 
+def ascii_encode_dict(data):
+    ascii_encode = lambda x: x.encode('ascii')
+    return dict(map(ascii_encode, pair) for pair in data.items())
