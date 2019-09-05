@@ -24,12 +24,13 @@ ITERATIONS_MAX = 10000  # pause the robot for maintenance every N steps
 GRIPPER_CLOSED_MAX_FRAMES = 100
 CLOSING_FRAMES = 7
 
+
 # BUFFER_MAX_SIZE = 100  # write buffer to disk every <- steps
 
 class ErgoReacherLiveEnv(gym.Env):
     def __init__(self, multi=False, multi_no=3, tracking=False):
-        self.multi_goal = multi
-        self.no_goals = multi_no
+        self.multigoal = multi
+        self.n_goals = multi_no
         self.tracking = tracking
         self.rand = Randomizer()
 
@@ -63,7 +64,8 @@ class ErgoReacherLiveEnv(gym.Env):
         if self.tracking:
             self.tracker_goal = Tracker(TRACKING_YELLOW["duckie_lower"], TRACKING_YELLOW["duckie_upper"])
 
-        self.calibration = np.load(os.path.join(config_dir(), "calib.npz"))["calibration"].astype(np.int16)
+        self.calibration = np.load(os.path.join(config_dir(), "calib-ergoreacher-adr.npz"))["calibration"].astype(
+            np.int16)
 
         self.last_step_time = time.time()
         self.pts_tip = deque(maxlen=32)
@@ -75,7 +77,7 @@ class ErgoReacherLiveEnv(gym.Env):
 
         self.last_speed = 100
 
-        self.goals_reached = 0
+        self.goals_done = 0
 
         # self.goal_states=[]
 
@@ -105,6 +107,18 @@ class ErgoReacherLiveEnv(gym.Env):
 
     def reset(self):
         self.setSpeed(100)  # do resetting at a normal speed
+
+        if self.multigoal:
+            # sample N goals, calculate total reward as distance between them. Add distances to list. Subtract list elements on rew calculation
+            self.goal_distances = []
+            self.goal_positions = []
+            for goal_idx in range(self.n_goals):
+                point = self.rhis.sampleSimplePoint()
+                self.goal_positions.append(point)
+            for goal_idx in range(self.n_goals - 1):
+                dist = np.linalg.norm(self.goal_positions[goal_idx] -
+                                      self.goal_positions[goal_idx + 1])
+                self.goal_distances.append(dist)
 
         self.gripper_closed = False
         self.gripper_closed_frames = 0
@@ -143,6 +157,27 @@ class ErgoReacherLiveEnv(gym.Env):
 
         cv2.imshow("Frame", self.last_frame)
         cv2.waitKey(1000)
+
+        if self.multigoal:
+
+            while True:
+                frame = Camera.to_numpy(self.cam.get_color())[:, :, ::-1]  # RGB to BGR for cv2
+                hsv = self.tracker.blur_img(frame)
+                mask_tip = self.tracker.prep_image(hsv)
+
+                # center of mass, radius of enclosing circle, x/y of enclosing circle
+                center_tip, radius_tip, x_tip, y_tip = self.tracker.track(mask_tip)
+
+                # grab more frames until the green blob is big enough / visible
+                if center_tip is not None and radius_tip > DETECTION_RADIUS:
+                    break
+
+            pos_tip = self._pixel2goal(center_tip)
+
+            reward = np.linalg.norm(np.array(self.goal[1:]) - np.array(pos_tip))
+            distance = reward.copy()
+
+            self.goal_distances.append(distance)
 
         self.setSpeed(self.last_speed)
 
@@ -262,14 +297,38 @@ class ErgoReacherLiveEnv(gym.Env):
         distance = reward.copy()
         reward *= -1  # the reward is the inverse distance
 
-        if reward > MIN_DIST:  # this is a bit arbitrary, but works well
-            done = True
-            reward = 1
-            if self.multi_goal:
-                self.goals_reached += 1
-                self.goal = self.rhis.sampleSimplePoint()
-                if not self.goals_reached == self.no_goals:
-                    done = False
+        if not self.multigoal:
+            if reward > MIN_DIST:  # this is a bit arbitrary, but works well
+                done = True
+                reward = 1
+
+        else:
+            reward *= -1
+            # self.goal = self.rhis.sampleSimplePoint()
+
+            dirty = False  # in case we _just_ hit the goal
+            if -reward > MIN_DIST:
+                self.goals_done += 1
+                if self.goals_done == self.n_goals:
+                    done = True
+                else:
+                    # TODO: MOVE BALL
+                    dirty = True
+
+            if done or self.goals_done == self.n_goals:
+                reward = 1
+            else:
+                # reward is distance to current target + sum of all other distances divided by total distance
+                if dirty:
+                    # take it off before the reward calc
+                    self.goals_done -= 1
+
+                reward = 1 + (-(reward + sum(
+                    self.goal_distances[:-(self.goals_done + 1)])) /
+                              sum(self.goal_distances))
+                if dirty:
+                    # add it back after the reward cald
+                    self.goals_done += 1
 
         return reward, done, distance, frame2.copy()
 

@@ -51,7 +51,7 @@ register(
 register(
     id='ErgoReacher-MultiGoal-Live-v1',
     entry_point='poppy_helpers.envs:ErgoReacherLiveEnv',
-    timestep_limit=1000,
+    timestep_limit=300,
     reward_threshold=1,
     kwargs={'multi':True},
 )

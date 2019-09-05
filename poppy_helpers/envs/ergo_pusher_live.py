@@ -141,7 +141,7 @@ class ErgoPusherLiveEnv(gym.Env):
         cv2.waitKey(1)
 
         obs = self._get_obs(center_puck)
-        return obs, reward, done, {"distance": distance}
+        return obs, reward, done, {"distance": distance, "img": frame}
 
     def _sim2pixel(self, sim_coords):
         x_t = sim_coords[0]
@@ -227,7 +227,7 @@ class ErgoPusherLiveEnv(gym.Env):
         return self.observation
 
     def _normalize(self, pos):
-        pos = np.array(pos).astype('float32')
+        pos = np.array(pos).astype('float32') * -1 # joints are inverted
         pos[:3] = ((pos[:3] + 90) / 180) * 2 - 1  # positions
         pos[3:] = ((pos[3:] + 300) / 600) * 2 - 1  # velocities
         return pos
@@ -255,7 +255,6 @@ class ErgoPusherLiveEnv(gym.Env):
             cv2.line(frame, pts[i - 1], pts[i], (0, 0, 255), thickness)
 
         return frame
-
 
     def _sample_goal_and_puck(self):
         self.goal = [
@@ -294,15 +293,16 @@ class ErgoPusherLiveEnv(gym.Env):
             done = True
             reward = 1
 
-        return reward, done, distance, frame, center_puck
+        return reward, done, distance, frame.copy(), center_puck
 
 
 if __name__ == '__main__':
     env = gym.make("ErgoPusher-Live-v1")
 
     for _ in range(3):
-        print ("=== RESET ===")
+        print("=== RESET ===")
         obs = env.reset()
+        print(obs, obs.shape)
 
         start = time.time()
 
@@ -312,4 +312,4 @@ if __name__ == '__main__':
             # print(rew, done, misc)
 
         diff = time.time() - start
-        print ("diff",diff)
+        print("diff", diff)

@@ -3,24 +3,22 @@ import gym
 import gym_ergojr
 import numpy as np
 
-env = gym.make("ErgoPusher-Graphical-v1")
-env.reset()
+env_sim = gym.make("ErgoPusher-Graphical-v1")
+env_sim.seed(1)
+env_sim.reset()
 
-zmq = ZMQController("pokey.local")
-zmq.compliant(False)
-zmq.set_max_speed(100)
-
-
-def sim2real(lst):
-    return ((np.array(lst) + np.array([-.5, 1, .5])) * -90).tolist()
+env_real = gym.make("ErgoPusher-Live-v1")
+env_real.seed(1)
+env_real.reset()
 
 
 def run(act):
-    zmq.goto_pos(sim2real(act))
-
+    obs, _, _, _ = env_real.step(act)
+    print ("real\t", obs)
     for _ in range(20):
-        env.step(act)
+        obs, _, _, _ = env_sim.step(act)
 
+    print ("sim\t", obs)
     input("press enter:")
 
 

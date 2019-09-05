@@ -3,7 +3,7 @@ import time
 
 import numpy as np
 from realsense_tracker.camera import Camera
-from realsense_tracker.tracker import Tracker
+from realsense_tracker.tracker import Tracker, TRACKING_GREEN
 
 from poppy_helpers.config import config_dir
 from poppy_helpers.controller import ZMQController
@@ -11,7 +11,8 @@ from poppy_helpers.controller import ZMQController
 ROBOT = True
 
 cam = Camera(color=True)
-tracker = Tracker((54, 68, 11), (92, 255, 224))
+
+tracker = Tracker(TRACKING_GREEN["nas_lower"], TRACKING_GREEN["nas_upper"])
 
 if ROBOT:
     zmq = ZMQController("flogo3.local")
@@ -36,7 +37,7 @@ print("forward, 2... 1...")
 time.sleep(2)
 
 while True:
-    _, (center, radius, x, y) = tracker.get_frame_and_track(cam)
+    _, (center, radius, x, y), _ = tracker.get_frame_and_track(cam)
     if center is not None and radius > 10:
         break
 
@@ -50,7 +51,7 @@ print("backward, 2... 1...")
 time.sleep(3)
 
 while True:
-    _, (center, radius, x, y) = tracker.get_frame_and_track(cam)
+    _, (center, radius, x, y), _ = tracker.get_frame_and_track(cam)
     if center is not None and radius > 10:
         break
 
@@ -64,11 +65,11 @@ print("upward, 2... 1...")
 time.sleep(2)
 
 while True:
-    _, (center, radius, x, y) = tracker.get_frame_and_track(cam)
+    _, (center, radius, x, y), _ = tracker.get_frame_and_track(cam)
     if center is not None and radius > 10:
         break
 
 print("upward: ", center, x, y)
 calibration[2] = center
 
-np.savez(os.path.join(config_dir(), "calib.npz"), calibration=calibration)
+np.savez(os.path.join(config_dir(), "calib-ergoreacher-nas.npz"), calibration=calibration)
